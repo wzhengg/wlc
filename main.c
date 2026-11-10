@@ -237,9 +237,11 @@ static void lexer_skip_whitespace(Lexer *l)
 	}
 }
 
-static Token lexer_consume_token(Lexer *l)
+static Token lexer_consume_token(Lexer *l, b32 allow_whitespace)
 {
-	lexer_skip_whitespace(l);
+	if (allow_whitespace) {
+		lexer_skip_whitespace(l);
+	}
 
 	if (lexer_eof(l)) {
 		return token_new(TOKEN_EOF, 0, 0);
@@ -310,7 +312,7 @@ static Token lexer_consume_token(Lexer *l)
 
 #define fatal(msg) \
 	do { \
-		write(STDERR_FILENO, msg, sizeof(msg)-1); \
+		write(STDERR_FILENO, (msg), sizeof(msg)-1); \
 		exit(1); \
 	} while (0)
 
@@ -318,67 +320,67 @@ static ElementProtocol *parser_parse(Parser *p, Arena *arena)
 {
 	Token token, open, close;
 
-	token = lexer_consume_token(&p->lexer);
+	token = lexer_consume_token(&p->lexer, 0);
 	if (token.type != TOKEN_LTQ) {
 		fatal("expected '<?'\n");
 	}
 
-	token = lexer_consume_token(&p->lexer);
+	token = lexer_consume_token(&p->lexer, 0);
 	if (token.type != TOKEN_NAME || !str8_eq(token.str, str8_lit("xml"))) {
 		fatal("expected 'xml'\n");
 	}
 
-	token = lexer_consume_token(&p->lexer);
+	token = lexer_consume_token(&p->lexer, 1);
 	if (token.type != TOKEN_NAME || !str8_eq(token.str, str8_lit("version"))) {
 		fatal("expected 'version'\n");
 	}
 
-	token = lexer_consume_token(&p->lexer);
+	token = lexer_consume_token(&p->lexer, 1);
 	if (token.type != TOKEN_EQ) {
 		fatal("expected '='\n");
 	}
 
-	open = lexer_consume_token(&p->lexer);
+	open = lexer_consume_token(&p->lexer, 1);
 	if (open.type != TOKEN_QUOT && open.type != TOKEN_APOS) {
 		fatal("expected \"'\" or '\"'\n");
 	}
 
-	token = lexer_consume_token(&p->lexer);
+	token = lexer_consume_token(&p->lexer, 0);
 	if (token.type != TOKEN_NUM && !str8_eq(token.str, str8_lit("1.0"))) {
 		fatal("expected '1.0'\n");
 	}
 
-	close = lexer_consume_token(&p->lexer);
+	close = lexer_consume_token(&p->lexer, 0);
 	if (close.type != open.type) {
 		fatal("expected closing '/\"\n");
 	}
 
-	token = lexer_consume_token(&p->lexer);
+	token = lexer_consume_token(&p->lexer, 1);
 	if (token.type != TOKEN_NAME || !str8_eq(token.str, str8_lit("encoding"))) {
 		fatal("expected 'encoding'\n");
 	}
 
-	token = lexer_consume_token(&p->lexer);
+	token = lexer_consume_token(&p->lexer, 1);
 	if (token.type != TOKEN_EQ) {
 		fatal("expected '='\n");
 	}
 
-	open = lexer_consume_token(&p->lexer);
+	open = lexer_consume_token(&p->lexer, 1);
 	if (open.type != TOKEN_QUOT && open.type != TOKEN_APOS) {
 		fatal("expected \"'\" or '\"'\n");
 	}
 
-	token = lexer_consume_token(&p->lexer);
+	token = lexer_consume_token(&p->lexer, 0);
 	if (token.type != TOKEN_NAME || !str8_eq(token.str, str8_lit("UTF-8"))) {
 		fatal("expected 'UTF-8'\n");
 	}
 
-	close = lexer_consume_token(&p->lexer);
+	close = lexer_consume_token(&p->lexer, 0);
 	if (close.type != open.type) {
 		fatal("expected closing '/\"\n");
 	}
 
-	token = lexer_consume_token(&p->lexer);
+	token = lexer_consume_token(&p->lexer, 1);
 	if (token.type != TOKEN_QGT) {
 		fatal("expected '?>'\n");
 	}
