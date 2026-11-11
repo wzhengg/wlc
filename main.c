@@ -5,41 +5,6 @@
 
 #include <stdlib.h>
 #include <stdio.h>
-#include <string.h>
-
-typedef struct {
-	u8 *buf;
-	u64 len;
-	u64 off;
-} Arena;
-
-void arena_init(Arena *arena, u8 *buf, u64 len)
-{
-	arena->buf = buf;
-	arena->len = len;
-	arena->off = 0;
-}
-
-void *arena_alloc_align(Arena *arena, u64 size, u64 align)
-{
-	assert(align != 0 && (align & (align-1)) == 0);
-
-	uintptr_t base = (uintptr_t)arena->buf;
-	uintptr_t ptr = base + (uintptr_t)arena->off;
-	ptr = (ptr + align - 1) & ~(align - 1);
-
-	if (ptr + size > base + arena->len) {
-		// TODO: Handle OOM.
-		assert(0);
-	}
-
-	arena->off = ptr - base + size;
-	memset((void *)ptr, 0, size);
-
-	return (void *)ptr;
-}
-
-#define arena_alloc(arena, n, T) (T *)arena_alloc_align(arena, (n)*sizeof(T), __alignof__(T))
 
 // TODO: Validate with DTD?
 
@@ -55,6 +20,7 @@ enum {
 	TOKEN_SGT,     // />
 	TOKEN_QUOT,    // "
 	TOKEN_APOS,    // '
+	TOKEN_WS,      // ' ', '\t', '\r', '\n'
 	TOKEN_NAME,
 	TOKEN_ATTRVAL,
 	TOKEN_EOF,
@@ -90,8 +56,6 @@ typedef struct {
 	Attributes attrs;
 } Element;
 
-#define between(v, a, b) ((a) <= (v) && (v) <= (b))
-
 static inline b32 is_legal_char(Codepoint p)
 {
 	u32 v = p.value;
@@ -111,10 +75,15 @@ static inline b32 is_digit(Codepoint p)
 
 static inline b32 is_name_start_char(Codepoint p)
 {
-	// TODO: Add rest.
 	u32 v = p.value;
 	return v == ':' || v == '_' ||
-		between(v, 'A', 'Z') || between(v, 'a', 'z');
+		between(v, 'A', 'Z') || between(v, 'a', 'z') ||
+		between(v, 0xC0, 0xD6) || between(v, 0xD8, 0xF6) ||
+		between(v, 0xF8, 0x2FF) || between(v, 0x370, 0x37D) ||
+		between(v, 0x37F, 0x1FFF) || between(v, 0x200C, 0x200D) ||
+		between(v, 0x2070, 0x218F) || between(v, 0x2C00, 0x2FEF) ||
+		between(v, 0x3001, 0xD7FF) || between(v, 0xF900, 0xFDCF) ||
+		between(v, 0xFDF0, 0xFFFD) || between(v, 0x10000, 0xEFFFF);
 }
 
 static inline b32 is_name_char(Codepoint p)
@@ -190,54 +159,49 @@ static void lexer_skip_whitespace(Lexer *l)
 {
 	while (!lexer_eof(l)) {
 		Codepoint next = lexer_peek_codepoint(l);
-		if (!is_whitespace(next)) {
+		if (!is_whitespace(next))
 			break;
-		}
 		lexer_consume_codepoint(l);
 	}
 }
 
-static Token lexer_consume_token(Lexer *l, b32 allow_whitespace)
+static Token lexer_consume_token(Lexer *l)
 {
-	if (allow_whitespace) {
-		lexer_skip_whitespace(l);
-	}
-
 	if (lexer_eof(l)) {
 		return token_new(TOKEN_EOF, 0, 0);
 	}
 
 	Token token = {.type = TOKEN_INVALID};
 	u32 pos_start = l->pos;
-	Codepoint point, point_next;
+	Codepoint ch, next;
 
-	point = lexer_consume_codepoint(l);
-	switch (point.value) {
+	ch = lexer_consume_codepoint(l);
+	switch (ch.value) {
 	case '=':
-		token = token_new(TOKEN_EQ, l->buf+pos_start, point.size);
+		token = token_new(TOKEN_EQ, l->buf+pos_start, ch.size);
 		break;
 	case '<':
 		if (!lexer_eof(l)) {
-			point_next = lexer_peek_codepoint(l);
-			if (point_next.value == '?') {
+			next = lexer_peek_codepoint(l);
+			if (next.value == '?') {
 				lexer_consume_codepoint(l);
 				token = token_new(TOKEN_LTQ, l->buf+pos_start, l->pos-pos_start);
 				break;
-			} else if (point_next.value == '/') {
+			} else if (next.value == '/') {
 				lexer_consume_codepoint(l);
 				token = token_new(TOKEN_LTS, l->buf+pos_start, l->pos-pos_start);
 				break;
 			}
 		}
-		token = token_new(TOKEN_LT, l->buf+pos_start, point.size);
+		token = token_new(TOKEN_LT, l->buf+pos_start, ch.size);
 		break;
 	case '>':
-		token = token_new(TOKEN_GT, l->buf+pos_start, point.size);
+		token = token_new(TOKEN_GT, l->buf+pos_start, ch.size);
 		break;
 	case '?':
 		if (!lexer_eof(l)) {
-			point_next = lexer_peek_codepoint(l);
-			if (point_next.value == '>') {
+			next = lexer_peek_codepoint(l);
+			if (next.value == '>') {
 				lexer_consume_codepoint(l);
 				token = token_new(TOKEN_QGT, l->buf+pos_start, l->pos-pos_start);
 			}
@@ -245,8 +209,8 @@ static Token lexer_consume_token(Lexer *l, b32 allow_whitespace)
 		break;
 	case '/':
 		if (!lexer_eof(l)) {
-			point_next = lexer_peek_codepoint(l);
-			if (point_next.value == '>') {
+			next = lexer_peek_codepoint(l);
+			if (next.value == '>') {
 				lexer_consume_codepoint(l);
 				token = token_new(TOKEN_SGT, l->buf+pos_start, l->pos-pos_start);
 			}
@@ -254,11 +218,13 @@ static Token lexer_consume_token(Lexer *l, b32 allow_whitespace)
 		break;
 	case '"':
 	case '\'':
-		token = lexer_consume_attr_value(l, pos_start, point.value);
+		token = lexer_consume_attr_value(l, pos_start, ch.value);
 		break;
 	default:
-		if (is_name_start_char(point)) {
+		if (is_name_start_char(ch)) {
 			token = lexer_consume_name_token(l, pos_start);
+		} else if (is_whitespace(ch)) {
+			token = token_new(TOKEN_WS, l->buf+pos_start, ch.size);
 		}
 		break;
 	}
@@ -291,7 +257,7 @@ static Element *parser_parse_element(Parser *p, Arena *arena)
 {
 	Token token;
 
-	token = lexer_consume_token(&p->lexer, false);
+	token = lexer_consume_token(&p->lexer);
 	if (token.type != TOKEN_NAME) {
 		return 0;
 	}
@@ -303,17 +269,20 @@ static Element *parser_parse_element(Parser *p, Arena *arena)
 	printf("%.*s ", (int)elem->name.size, elem->name.data);
 
 	while (1) {
-		token = lexer_consume_token(&p->lexer, true);
+		lexer_skip_whitespace(&p->lexer);
+		token = lexer_consume_token(&p->lexer);
 		if (token.type != TOKEN_NAME) {
 			break;
 		}
 		// TODO: Proper attribute parsing.
 		token.str; // TODO: attr name
 		printf("%.*s", (int)token.str.size, token.str.data);
-		token = lexer_consume_token(&p->lexer, true);
+		lexer_skip_whitespace(&p->lexer);
+		token = lexer_consume_token(&p->lexer);
 		assert(token.type == TOKEN_EQ);
 		printf("=");
-		token = lexer_consume_token(&p->lexer, true);
+		lexer_skip_whitespace(&p->lexer);
+		token = lexer_consume_token(&p->lexer);
 		assert(token.type == TOKEN_ATTRVAL);
 		printf("%.*s ", (int)token.str.size, token.str.data);
 	};
@@ -328,7 +297,8 @@ static Element *parser_parse_element(Parser *p, Arena *arena)
 			// TODO: Whitespace handling. Right now, leading character data
 			// whitespace isn't preserved.
 			u32 start = p->lexer.pos;
-			token = lexer_consume_token(&p->lexer, true);
+			lexer_skip_whitespace(&p->lexer);
+			token = lexer_consume_token(&p->lexer);
 			if (token.type == TOKEN_LTS) {
 				break;
 			} else if (token.type == TOKEN_LT) {
@@ -341,9 +311,10 @@ static Element *parser_parse_element(Parser *p, Arena *arena)
 			// TODO: Handle non character data. How are comments not breaking
 			// right now? :O
 		};
-		token = lexer_consume_token(&p->lexer, false);
+		token = lexer_consume_token(&p->lexer);
 		assert(token.type == TOKEN_NAME && str8_eq(token.str, elem->name));
-		token = lexer_consume_token(&p->lexer, true);
+		lexer_skip_whitespace(&p->lexer);
+		token = lexer_consume_token(&p->lexer);
 		assert(token.type == TOKEN_GT);
 		return elem;
 	default:
@@ -355,52 +326,60 @@ static Element *parser_parse(Parser *p, Arena *arena)
 {
 	Token token, open, close;
 
-	token = lexer_consume_token(&p->lexer, false);
+	token = lexer_consume_token(&p->lexer);
 	if (token.type != TOKEN_LTQ) {
 		fatal("expected '<?'\n");
 	}
 
-	token = lexer_consume_token(&p->lexer, false);
+	token = lexer_consume_token(&p->lexer);
 	if (token.type != TOKEN_NAME || !str8_eq(token.str, str8_lit("xml"))) {
 		fatal("expected 'xml'\n");
 	}
 
-	token = lexer_consume_token(&p->lexer, true);
+	lexer_skip_whitespace(&p->lexer);
+	token = lexer_consume_token(&p->lexer);
 	if (token.type != TOKEN_NAME || !str8_eq(token.str, str8_lit("version"))) {
 		fatal("expected 'version'\n");
 	}
 
-	token = lexer_consume_token(&p->lexer, true);
+	lexer_skip_whitespace(&p->lexer);
+	token = lexer_consume_token(&p->lexer);
 	if (token.type != TOKEN_EQ) {
 		fatal("expected '='\n");
 	}
 
-	token = lexer_consume_token(&p->lexer, true);
+	lexer_skip_whitespace(&p->lexer);
+	token = lexer_consume_token(&p->lexer);
 	if (token.type != TOKEN_ATTRVAL || !str8_eq(token.str, str8_lit("\"1.0\""))) {
 		fatal("expected \"1.0\"\n");
 	}
 
-	token = lexer_consume_token(&p->lexer, true);
+	lexer_skip_whitespace(&p->lexer);
+	token = lexer_consume_token(&p->lexer);
 	if (token.type != TOKEN_NAME || !str8_eq(token.str, str8_lit("encoding"))) {
 		fatal("expected 'encoding'\n");
 	}
 
-	token = lexer_consume_token(&p->lexer, true);
+	lexer_skip_whitespace(&p->lexer);
+	token = lexer_consume_token(&p->lexer);
 	if (token.type != TOKEN_EQ) {
 		fatal("expected '='\n");
 	}
 
-	token = lexer_consume_token(&p->lexer, true);
+	lexer_skip_whitespace(&p->lexer);
+	token = lexer_consume_token(&p->lexer);
 	if (token.type != TOKEN_ATTRVAL || !str8_eq(token.str, str8_lit("\"UTF-8\""))) {
 		fatal("expected \"UTF-8\"\n");
 	}
 
-	token = lexer_consume_token(&p->lexer, true);
+	lexer_skip_whitespace(&p->lexer);
+	token = lexer_consume_token(&p->lexer);
 	if (token.type != TOKEN_QGT) {
 		fatal("expected '?>'\n");
 	}
 
-	token = lexer_consume_token(&p->lexer, true);
+	lexer_skip_whitespace(&p->lexer);
+	token = lexer_consume_token(&p->lexer);
 	if (token.type != TOKEN_LT) {
 		fatal("expected '<'\n");
 	}

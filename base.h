@@ -27,6 +27,9 @@ typedef double f64;
 
 #define KiB(n) ((n) << 10)
 #define MiB(n) ((n) << 20)
+#define GiB(n) ((n) << 30)
+
+#define between(v, a, b) ((a) <= (v) && (v) <= (b))
 
 #define assert(c) \
 	do { \
@@ -56,5 +59,16 @@ String8 str8(u8 *data, u64 size);
 b32 str8_eq(String8 a, String8 b);
 
 Codepoint decode_utf8(u8 *str, u64 max_size);
+
+typedef struct {
+	u8 *buf;
+	u64 len;
+	u64 off;
+} Arena;
+
+void arena_init(Arena *arena, u8 *buf, u64 len);
+
+void *arena_alloc_align(Arena *arena, u64 size, u64 align);
+#define arena_alloc(arena, n, T) (T *)arena_alloc_align(arena, (n)*sizeof(T), __alignof__(T))
 
 #endif

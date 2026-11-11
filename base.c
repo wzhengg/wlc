@@ -61,3 +61,29 @@ Codepoint decode_utf8(u8 *str, u64 max_size)
 
 	return point;
 }
+
+void arena_init(Arena *arena, u8 *buf, u64 len)
+{
+	arena->buf = buf;
+	arena->len = len;
+	arena->off = 0;
+}
+
+void *arena_alloc_align(Arena *arena, u64 size, u64 align)
+{
+	assert(align != 0 && (align & (align-1)) == 0);
+
+	uintptr_t base = (uintptr_t)arena->buf;
+	uintptr_t ptr = base + (uintptr_t)arena->off;
+	ptr = (ptr + align - 1) & ~(align - 1);
+
+	if (ptr + size > base + arena->len) {
+		// TODO: Handle OOM.
+		assert(0);
+	}
+
+	arena->off = ptr - base + size;
+	memset((void *)ptr, 0, size);
+
+	return (void *)ptr;
+}
