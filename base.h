@@ -22,6 +22,9 @@ typedef s64 b64;
 typedef float  f32;
 typedef double f64;
 
+#define false 0
+#define true  1
+
 #define KiB(n) ((n) << 10)
 #define MiB(n) ((n) << 20)
 

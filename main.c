@@ -46,17 +46,18 @@ void *arena_alloc_align(Arena *arena, u64 size, u64 align)
 typedef u64 TokenType;
 enum {
 	TOKEN_INVALID,
-	TOKEN_EQ,
-	TOKEN_LT,
-	TOKEN_LTQ,
-	TOKEN_LTS,
-	TOKEN_GT,
-	TOKEN_QGT,
-	TOKEN_SGT,
-	TOKEN_QUOT,
-	TOKEN_APOS,
+	TOKEN_EQ,      // =
+	TOKEN_LT,      // <
+	TOKEN_GT,      // >
+	TOKEN_LTQ,     // <?
+	TOKEN_QGT,     // ?>
+	TOKEN_LTS,     // </
+	TOKEN_SGT,     // />
+	TOKEN_QUOT,    // "
+	TOKEN_APOS,    // '
 	TOKEN_NAME,
 	TOKEN_NUM,
+	TOKEN_ATTRVAL,
 	TOKEN_EOF,
 };
 
@@ -75,82 +76,38 @@ typedef struct {
 	Lexer lexer;
 } Parser;
 
-typedef struct ElementArg         ElementArg;
-typedef struct ElementCopyright   ElementCopyright;
-typedef struct ElementDescription ElementDescription;
-typedef struct ElementEntry       ElementEntry;
-typedef struct ElementEnum        ElementEnum;
-typedef struct ElementEvent       ElementEvent;
-typedef struct ElementInterface   ElementInterface;
-typedef struct ElementProtocol    ElementProtocol;
-typedef struct ElementRequest     ElementRequest;
-
-struct ElementArg {
-	String8 name;
-	String8 type;
-	String8 summary;
-	String8 enumm;
-	String8 interface;
-	String8 allow_null;
-};
-
-struct ElementCopyright {
-	String8 text;
-};
-
-struct ElementDescription {
-	String8 summary;
-	String8 text;
-};
-
-struct ElementEntry {
+typedef struct {
 	String8 name;
 	String8 value;
-	String8 summary;
-};
+} Attribute;
 
-struct ElementEnum {
-	String8 name;
-	String8 since;
-	String8 bitfield;
-	ElementDescription *description;
-	ElementEntry *entries;
-};
+typedef struct {
+	// TODO: String-to-string map.
+	int foo;
+} Attributes;
 
-struct ElementEvent {
+typedef struct {
 	String8 name;
-	String8 type;
-	String8 deprecated_since;
-	ElementDescription *description;
-	ElementArg *args;
-};
+	Attributes attrs;
+} Element;
 
-struct ElementInterface {
-	String8 name;
-	String8 version;
-	ElementDescription *description;
-	ElementRequest *requests;
-	ElementEvent *events;
-	ElementEnum *enums;
-};
+#define between(v, a, b) ((a) <= (v) && (v) <= (b))
 
-struct ElementProtocol {
-	String8 name;
-	ElementCopyright *copyright;
-	ElementInterface *interfaces;
-};
+static inline b32 is_legal_char(Codepoint p)
+{
+	u32 v = p.value;
+	return v == '\t' || v == '\n' || v == '\r' ||
+		between(v, 0x20, 0xD7FF) || between(v, 0xE000, 0xFFFD) || between(v, 0x10000, 0x10FFFF);
+}
 
-struct ElementRequest {
-	String8 name;
-	String8 type;
-	String8 since;
-	ElementDescription *description;
-	ElementArg *args;
-};
+static inline b32 is_whitespace(Codepoint p)
+{
+	return p.value == ' ' || p.value == '\t' || p.value == '\r' || p.value == '\n';
+}
 
 static inline b32 is_digit(Codepoint p)
 {
-	return '0' <= p.value && p.value <= '9';
+	return between(p.value, '0', '9');
 }
 
 static inline b32 is_name_start_char(Codepoint p)
@@ -158,14 +115,14 @@ static inline b32 is_name_start_char(Codepoint p)
 	// TODO: Add rest.
 	u32 v = p.value;
 	return v == ':' || v == '_' ||
-		('A' <= v && v <= 'Z') || ('a' <= v && v <= 'z');
+		between(v, 'A', 'Z') || between(v, 'a', 'z');
 }
 
 static inline b32 is_name_char(Codepoint p)
 {
 	u32 v = p.value;
 	return is_name_start_char(p) || is_digit(p) || v == '-' || v == '.' ||
-		v == 0xB7 || (0x300 <= v && v <= 0x36F) || (0x203F <= v && v <= 0x2040);
+		v == 0xB7 || between(v, 0x300, 0x36F) || between(v, 0x203F, 0x2040);
 }
 
 static inline Token token_new(TokenType type, u8 *str, u64 size)
@@ -226,11 +183,28 @@ static Token lexer_consume_num_token(Lexer *l, u32 pos_start)
 	return token_new(TOKEN_NUM, l->buf+pos_start, l->pos-pos_start);
 }
 
+static Token lexer_consume_attr_value(Lexer *l, u32 start, u8 delim)
+{
+	while (!lexer_eof(l)) {
+		Codepoint next = lexer_peek_codepoint(l);
+		if (!is_legal_char(next) || next.value == '<' || next.value == '&')
+			return token_new(TOKEN_INVALID, 0, 0);
+		if (lexer_consume_codepoint(l).value == delim)
+			break;
+	}
+
+	String8 lit = str8(l->buf+start, l->pos-start);
+	if (lit.size >= 2 && lit.data[lit.size-1] == delim)
+		return token_new(TOKEN_ATTRVAL, l->buf+start, l->pos-start);
+
+	return token_new(TOKEN_INVALID, 0, 0);
+}
+
 static void lexer_skip_whitespace(Lexer *l)
 {
 	while (!lexer_eof(l)) {
 		Codepoint next = lexer_peek_codepoint(l);
-		if (next.value != ' ' && next.value != '\t' && next.value != '\r' && next.value != '\n') {
+		if (!is_whitespace(next)) {
 			break;
 		}
 		lexer_consume_codepoint(l);
@@ -293,10 +267,8 @@ static Token lexer_consume_token(Lexer *l, b32 allow_whitespace)
 		}
 		break;
 	case '"':
-		token = token_new(TOKEN_QUOT, l->buf+pos_start, point.size);
-		break;
 	case '\'':
-		token = token_new(TOKEN_APOS, l->buf+pos_start, point.size);
+		token = lexer_consume_attr_value(l, pos_start, point.value);
 		break;
 	default:
 		if (is_name_start_char(point)) {
@@ -316,78 +288,99 @@ static Token lexer_consume_token(Lexer *l, b32 allow_whitespace)
 		exit(1); \
 	} while (0)
 
-static ElementProtocol *parser_parse(Parser *p, Arena *arena)
+// Assumes '<' has already been consumed.
+static Element *parser_parse_element(Parser *p, Arena *arena)
+{
+	Token token;
+
+	token = lexer_consume_token(&p->lexer, false);
+	if (token.type != TOKEN_NAME) {
+		return 0;
+	}
+
+	Element *elem = arena_alloc(arena, 1, Element);
+	elem->name = token.str;
+	// TODO: Initialize elem->attrs.
+
+	do {
+		token = lexer_consume_token(&p->lexer, true);
+		if (token.type != TOKEN_NAME) {
+			break;
+		}
+		// TODO: Proper attribute parsing.
+		token.str; // TODO: attr name
+		token = lexer_consume_token(&p->lexer, true);
+		assert(token.type == TOKEN_EQ);
+		token = lexer_consume_token(&p->lexer, true);
+		assert(token.type == TOKEN_ATTRVAL);
+	} while (1);
+
+	if (token.type != TOKEN_SGT) {
+		return 0;
+	}
+
+	return elem;
+}
+
+static Element *parser_parse(Parser *p, Arena *arena)
 {
 	Token token, open, close;
 
-	token = lexer_consume_token(&p->lexer, 0);
+	token = lexer_consume_token(&p->lexer, false);
 	if (token.type != TOKEN_LTQ) {
 		fatal("expected '<?'\n");
 	}
 
-	token = lexer_consume_token(&p->lexer, 0);
+	token = lexer_consume_token(&p->lexer, false);
 	if (token.type != TOKEN_NAME || !str8_eq(token.str, str8_lit("xml"))) {
 		fatal("expected 'xml'\n");
 	}
 
-	token = lexer_consume_token(&p->lexer, 1);
+	token = lexer_consume_token(&p->lexer, true);
 	if (token.type != TOKEN_NAME || !str8_eq(token.str, str8_lit("version"))) {
 		fatal("expected 'version'\n");
 	}
 
-	token = lexer_consume_token(&p->lexer, 1);
+	token = lexer_consume_token(&p->lexer, true);
 	if (token.type != TOKEN_EQ) {
 		fatal("expected '='\n");
 	}
 
-	open = lexer_consume_token(&p->lexer, 1);
-	if (open.type != TOKEN_QUOT && open.type != TOKEN_APOS) {
-		fatal("expected \"'\" or '\"'\n");
+	token = lexer_consume_token(&p->lexer, true);
+	if (token.type != TOKEN_ATTRVAL || !str8_eq(token.str, str8_lit("\"1.0\""))) {
+		fatal("expected \"1.0\"\n");
 	}
 
-	token = lexer_consume_token(&p->lexer, 0);
-	if (token.type != TOKEN_NUM && !str8_eq(token.str, str8_lit("1.0"))) {
-		fatal("expected '1.0'\n");
-	}
-
-	close = lexer_consume_token(&p->lexer, 0);
-	if (close.type != open.type) {
-		fatal("expected closing '/\"\n");
-	}
-
-	token = lexer_consume_token(&p->lexer, 1);
+	token = lexer_consume_token(&p->lexer, true);
 	if (token.type != TOKEN_NAME || !str8_eq(token.str, str8_lit("encoding"))) {
 		fatal("expected 'encoding'\n");
 	}
 
-	token = lexer_consume_token(&p->lexer, 1);
+	token = lexer_consume_token(&p->lexer, true);
 	if (token.type != TOKEN_EQ) {
 		fatal("expected '='\n");
 	}
 
-	open = lexer_consume_token(&p->lexer, 1);
-	if (open.type != TOKEN_QUOT && open.type != TOKEN_APOS) {
-		fatal("expected \"'\" or '\"'\n");
+	token = lexer_consume_token(&p->lexer, true);
+	if (token.type != TOKEN_ATTRVAL || !str8_eq(token.str, str8_lit("\"UTF-8\""))) {
+		fatal("expected \"UTF-8\"\n");
 	}
 
-	token = lexer_consume_token(&p->lexer, 0);
-	if (token.type != TOKEN_NAME || !str8_eq(token.str, str8_lit("UTF-8"))) {
-		fatal("expected 'UTF-8'\n");
-	}
-
-	close = lexer_consume_token(&p->lexer, 0);
-	if (close.type != open.type) {
-		fatal("expected closing '/\"\n");
-	}
-
-	token = lexer_consume_token(&p->lexer, 1);
+	token = lexer_consume_token(&p->lexer, true);
 	if (token.type != TOKEN_QGT) {
 		fatal("expected '?>'\n");
 	}
 
-	ElementProtocol *tree = arena_alloc(arena, 1, ElementProtocol);
+	token = lexer_consume_token(&p->lexer, true);
+	if (token.type != TOKEN_LT) {
+		fatal("expected '<'\n");
+	}
+	Element *root = parser_parse_element(p, arena);
+	if (!root) {
+		fatal("expected root element\n");
+	}
 
-	return tree;
+	return root;
 }
 
 int main(int argc, char **argv)
