@@ -56,7 +56,6 @@ enum {
 	TOKEN_QUOT,    // "
 	TOKEN_APOS,    // '
 	TOKEN_NAME,
-	TOKEN_NUM,
 	TOKEN_ATTRVAL,
 	TOKEN_EOF,
 };
@@ -170,19 +169,6 @@ static Token lexer_consume_name_token(Lexer *l, u32 pos_start)
 	return token_new(TOKEN_NAME, l->buf+pos_start, l->pos-pos_start);
 }
 
-static Token lexer_consume_num_token(Lexer *l, u32 pos_start)
-{
-	while (!lexer_eof(l)) {
-		Codepoint next = lexer_peek_codepoint(l);
-		if (!is_digit(next) && next.value != '.') {
-			break;
-		}
-		lexer_consume_codepoint(l);
-	}
-
-	return token_new(TOKEN_NUM, l->buf+pos_start, l->pos-pos_start);
-}
-
 static Token lexer_consume_attr_value(Lexer *l, u32 start, u8 delim)
 {
 	while (!lexer_eof(l)) {
@@ -273,13 +259,25 @@ static Token lexer_consume_token(Lexer *l, b32 allow_whitespace)
 	default:
 		if (is_name_start_char(point)) {
 			token = lexer_consume_name_token(l, pos_start);
-		} else if (is_digit(point)) {
-			token = lexer_consume_num_token(l, pos_start);
 		}
 		break;
 	}
 
 	return token;
+}
+
+static String8 lexer_consume_chardata(Lexer *l, u32 start)
+{
+	// TODO: Handle CDATA close delimiter.
+
+	while (!lexer_eof(l)) {
+		Codepoint ch = lexer_peek_codepoint(l);
+		if (!is_legal_char(ch) || ch.value == '<' || ch.value == '&')
+			break;
+		lexer_consume_codepoint(l);
+	}
+
+	return str8(l->buf+start, l->pos-start);
 }
 
 #define fatal(msg) \
@@ -302,24 +300,55 @@ static Element *parser_parse_element(Parser *p, Arena *arena)
 	elem->name = token.str;
 	// TODO: Initialize elem->attrs.
 
-	do {
+	printf("%.*s ", (int)elem->name.size, elem->name.data);
+
+	while (1) {
 		token = lexer_consume_token(&p->lexer, true);
 		if (token.type != TOKEN_NAME) {
 			break;
 		}
 		// TODO: Proper attribute parsing.
 		token.str; // TODO: attr name
+		printf("%.*s", (int)token.str.size, token.str.data);
 		token = lexer_consume_token(&p->lexer, true);
 		assert(token.type == TOKEN_EQ);
+		printf("=");
 		token = lexer_consume_token(&p->lexer, true);
 		assert(token.type == TOKEN_ATTRVAL);
-	} while (1);
+		printf("%.*s ", (int)token.str.size, token.str.data);
+	};
 
-	if (token.type != TOKEN_SGT) {
+	printf("\n");
+
+	switch (token.type) {
+	case TOKEN_SGT:
+		return elem;
+	case TOKEN_GT:
+		while (1) {
+			// TODO: Whitespace handling. Right now, leading character data
+			// whitespace isn't preserved.
+			u32 start = p->lexer.pos;
+			token = lexer_consume_token(&p->lexer, true);
+			if (token.type == TOKEN_LTS) {
+				break;
+			} else if (token.type == TOKEN_LT) {
+				// TODO: Build tree.
+				parser_parse_element(p, arena);
+			} else {
+				// Assume character data for now.
+				lexer_consume_chardata(&p->lexer, start);
+			}
+			// TODO: Handle non character data. How are comments not breaking
+			// right now? :O
+		};
+		token = lexer_consume_token(&p->lexer, false);
+		assert(token.type == TOKEN_NAME && str8_eq(token.str, elem->name));
+		token = lexer_consume_token(&p->lexer, true);
+		assert(token.type == TOKEN_GT);
+		return elem;
+	default:
 		return 0;
 	}
-
-	return elem;
 }
 
 static Element *parser_parse(Parser *p, Arena *arena)
