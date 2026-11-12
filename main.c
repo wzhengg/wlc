@@ -28,7 +28,7 @@ enum {
 
 typedef struct {
 	TokenType type;
-	String8 str;
+	String8   str;
 } Token;
 
 typedef struct {
@@ -46,15 +46,50 @@ typedef struct {
 	String8 value;
 } Attribute;
 
+// string-to-string map
 typedef struct {
-	// TODO: String-to-string map.
-	int foo;
+	Attribute *arr;
+	u64 len;
 } Attributes;
 
 typedef struct {
-	String8 name;
+	String8    name;
 	Attributes attrs;
 } Element;
+
+static Attributes attrs_new(Arena *arena, u64 len)
+{
+	Attributes attrs;
+	attrs.arr = arena_alloc(arena, len, Attribute);
+	attrs.len = len;
+	return attrs;
+}
+
+// TODO: Is this hash function good enough?
+static u64 hash(String8 s)
+{
+	u64 hash = 5381;
+	for (u64 i = 0; i < s.size; ++i)
+		hash = hash*33 ^ s.data[i];
+	return hash;
+}
+
+static Attribute *attrs_get(Attributes attrs, String8 name)
+{
+	u64 i = hash(name) % attrs.len;
+	return attrs.arr + i;
+}
+
+static void attrs_set(Attributes attrs, String8 name, String8 value)
+{
+	Attribute *attr = attrs_get(attrs, name);
+
+	// TODO: collisions and resizing
+	assert(attr->name.data == 0);
+
+	attr->name = name;
+	attr->value = value;
+}
 
 static inline b32 is_legal_char(Codepoint p)
 {
@@ -112,15 +147,15 @@ static b32 lexer_eof(Lexer *l)
 	return l->pos >= l->buf_len;
 }
 
-static Codepoint lexer_peek_codepoint(Lexer *l)
+static Codepoint lexer_peek_char(Lexer *l)
 {
 	assert(!lexer_eof(l));
 	return decode_utf8(l->buf+l->pos, l->buf_len-l->pos);
 }
 
-static Codepoint lexer_consume_codepoint(Lexer *l)
+static Codepoint lexer_consume_char(Lexer *l)
 {
-	Codepoint point = lexer_peek_codepoint(l);
+	Codepoint point = lexer_peek_char(l);
 	l->pos += point.size;
 	return point;
 }
@@ -128,11 +163,10 @@ static Codepoint lexer_consume_codepoint(Lexer *l)
 static Token lexer_consume_name_token(Lexer *l, u32 pos_start)
 {
 	while (!lexer_eof(l)) {
-		Codepoint next = lexer_peek_codepoint(l);
-		if (!is_name_char(next)) {
+		Codepoint next = lexer_peek_char(l);
+		if (!is_name_char(next))
 			break;
-		}
-		lexer_consume_codepoint(l);
+		lexer_consume_char(l);
 	}
 
 	return token_new(TOKEN_NAME, l->buf+pos_start, l->pos-pos_start);
@@ -141,10 +175,10 @@ static Token lexer_consume_name_token(Lexer *l, u32 pos_start)
 static Token lexer_consume_attr_value(Lexer *l, u32 start, u8 delim)
 {
 	while (!lexer_eof(l)) {
-		Codepoint next = lexer_peek_codepoint(l);
+		Codepoint next = lexer_peek_char(l);
 		if (!is_legal_char(next) || next.value == '<' || next.value == '&')
 			return token_new(TOKEN_INVALID, 0, 0);
-		if (lexer_consume_codepoint(l).value == delim)
+		if (lexer_consume_char(l).value == delim)
 			break;
 	}
 
@@ -158,10 +192,10 @@ static Token lexer_consume_attr_value(Lexer *l, u32 start, u8 delim)
 static void lexer_skip_whitespace(Lexer *l)
 {
 	while (!lexer_eof(l)) {
-		Codepoint next = lexer_peek_codepoint(l);
+		Codepoint next = lexer_peek_char(l);
 		if (!is_whitespace(next))
 			break;
-		lexer_consume_codepoint(l);
+		lexer_consume_char(l);
 	}
 }
 
@@ -175,20 +209,20 @@ static Token lexer_consume_token(Lexer *l)
 	u32 pos_start = l->pos;
 	Codepoint ch, next;
 
-	ch = lexer_consume_codepoint(l);
+	ch = lexer_consume_char(l);
 	switch (ch.value) {
 	case '=':
 		token = token_new(TOKEN_EQ, l->buf+pos_start, ch.size);
 		break;
 	case '<':
 		if (!lexer_eof(l)) {
-			next = lexer_peek_codepoint(l);
+			next = lexer_peek_char(l);
 			if (next.value == '?') {
-				lexer_consume_codepoint(l);
+				lexer_consume_char(l);
 				token = token_new(TOKEN_LTQ, l->buf+pos_start, l->pos-pos_start);
 				break;
 			} else if (next.value == '/') {
-				lexer_consume_codepoint(l);
+				lexer_consume_char(l);
 				token = token_new(TOKEN_LTS, l->buf+pos_start, l->pos-pos_start);
 				break;
 			}
@@ -200,18 +234,18 @@ static Token lexer_consume_token(Lexer *l)
 		break;
 	case '?':
 		if (!lexer_eof(l)) {
-			next = lexer_peek_codepoint(l);
+			next = lexer_peek_char(l);
 			if (next.value == '>') {
-				lexer_consume_codepoint(l);
+				lexer_consume_char(l);
 				token = token_new(TOKEN_QGT, l->buf+pos_start, l->pos-pos_start);
 			}
 		}
 		break;
 	case '/':
 		if (!lexer_eof(l)) {
-			next = lexer_peek_codepoint(l);
+			next = lexer_peek_char(l);
 			if (next.value == '>') {
-				lexer_consume_codepoint(l);
+				lexer_consume_char(l);
 				token = token_new(TOKEN_SGT, l->buf+pos_start, l->pos-pos_start);
 			}
 		}
@@ -232,15 +266,16 @@ static Token lexer_consume_token(Lexer *l)
 	return token;
 }
 
+// All text that is not markup is character data.
 static String8 lexer_consume_chardata(Lexer *l, u32 start)
 {
 	// TODO: Handle CDATA close delimiter.
 
 	while (!lexer_eof(l)) {
-		Codepoint ch = lexer_peek_codepoint(l);
+		Codepoint ch = lexer_peek_char(l);
 		if (!is_legal_char(ch) || ch.value == '<' || ch.value == '&')
 			break;
-		lexer_consume_codepoint(l);
+		lexer_consume_char(l);
 	}
 
 	return str8(l->buf+start, l->pos-start);
@@ -264,9 +299,9 @@ static Element *parser_parse_element(Parser *p, Arena *arena)
 
 	Element *elem = arena_alloc(arena, 1, Element);
 	elem->name = token.str;
-	// TODO: Initialize elem->attrs.
+	elem->attrs = attrs_new(arena, 32);
 
-	printf("%.*s ", (int)elem->name.size, elem->name.data);
+	printf("<%.*s", (int)elem->name.size, elem->name.data);
 
 	while (1) {
 		lexer_skip_whitespace(&p->lexer);
@@ -274,20 +309,30 @@ static Element *parser_parse_element(Parser *p, Arena *arena)
 		if (token.type != TOKEN_NAME) {
 			break;
 		}
-		// TODO: Proper attribute parsing.
-		token.str; // TODO: attr name
-		printf("%.*s", (int)token.str.size, token.str.data);
+
+		String8 name = token.str;
+
 		lexer_skip_whitespace(&p->lexer);
 		token = lexer_consume_token(&p->lexer);
 		assert(token.type == TOKEN_EQ);
-		printf("=");
+
 		lexer_skip_whitespace(&p->lexer);
 		token = lexer_consume_token(&p->lexer);
 		assert(token.type == TOKEN_ATTRVAL);
-		printf("%.*s ", (int)token.str.size, token.str.data);
+
+		String8 value = token.str;
+
+		attrs_set(elem->attrs, name, value);
 	};
 
-	printf("\n");
+	for (u32 i = 0; i < elem->attrs.len; ++i) {
+		if (elem->attrs.arr[i].name.data) {
+			printf(" %.*s=%.*s",
+					(int)elem->attrs.arr[i].name.size, elem->attrs.arr[i].name.data,
+					(int)elem->attrs.arr[i].value.size, elem->attrs.arr[i].value.data);
+		}
+	}
+	printf(">\n");
 
 	switch (token.type) {
 	case TOKEN_SGT:
@@ -393,7 +438,7 @@ static Element *parser_parse(Parser *p, Arena *arena)
 
 int main(int argc, char **argv)
 {
-	u64 memsize = MiB(1);
+	u64 memsize = MiB(4);
 	void *mem = mmap(0, memsize, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
 	if (mem == MAP_FAILED) {
 		fatal("scanner: mmap failed\n");
