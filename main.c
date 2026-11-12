@@ -6,6 +6,10 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+// TODO: Improve error-handling situation.
+// TODO: Keep track of line and column number in lexer.
+// TODO: Store chardata in syntax tree.
+// TODO: Handle comments.
 // TODO: Validate with DTD?
 
 typedef u64 TokenType;
