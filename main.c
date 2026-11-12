@@ -18,6 +18,8 @@ enum {
 	TOKEN_QGT,     // ?>
 	TOKEN_LTS,     // </
 	TOKEN_SGT,     // />
+	TOKEN_LTBHH,   // <!--
+	TOKEN_HHGT,    // -->
 	TOKEN_QUOT,    // "
 	TOKEN_APOS,    // '
 	TOKEN_WS,      // ' ', '\t', '\r', '\n'
@@ -52,10 +54,30 @@ typedef struct {
 	u64 len;
 } Attributes;
 
+typedef struct Element Element;
+
 typedef struct {
+	Element *head;
+	Element *tail;
+} ElementList;
+
+struct Element {
 	String8    name;
 	Attributes attrs;
-} Element;
+
+	ElementList children;
+	Element *next;
+};
+
+#define sll_pushback(head, tail, node) \
+	do { \
+		if (!(head)) { \
+			(head) = (tail) = (node); \
+		} else { \
+			(tail)->next = (node); \
+			(tail) = (node); \
+		} \
+	} while (0)
 
 static Attributes attrs_new(Arena *arena, u64 len)
 {
@@ -160,6 +182,7 @@ static Codepoint lexer_consume_char(Lexer *l)
 	return point;
 }
 
+// Assume name start char has been consumed.
 static Token lexer_consume_name_token(Lexer *l, u32 pos_start)
 {
 	while (!lexer_eof(l)) {
@@ -301,8 +324,6 @@ static Element *parser_parse_element(Parser *p, Arena *arena)
 	elem->name = token.str;
 	elem->attrs = attrs_new(arena, 32);
 
-	printf("<%.*s", (int)elem->name.size, elem->name.data);
-
 	while (1) {
 		lexer_skip_whitespace(&p->lexer);
 		token = lexer_consume_token(&p->lexer);
@@ -325,15 +346,6 @@ static Element *parser_parse_element(Parser *p, Arena *arena)
 		attrs_set(elem->attrs, name, value);
 	};
 
-	for (u32 i = 0; i < elem->attrs.len; ++i) {
-		if (elem->attrs.arr[i].name.data) {
-			printf(" %.*s=%.*s",
-					(int)elem->attrs.arr[i].name.size, elem->attrs.arr[i].name.data,
-					(int)elem->attrs.arr[i].value.size, elem->attrs.arr[i].value.data);
-		}
-	}
-	printf(">\n");
-
 	switch (token.type) {
 	case TOKEN_SGT:
 		return elem;
@@ -348,13 +360,17 @@ static Element *parser_parse_element(Parser *p, Arena *arena)
 				break;
 			} else if (token.type == TOKEN_LT) {
 				// TODO: Build tree.
-				parser_parse_element(p, arena);
+				Element *child = parser_parse_element(p, arena);
+				if (child) {
+					sll_pushback(elem->children.head, elem->children.tail, child);
+				}
+			} else if (token.type == TOKEN_LTBHH) {
+				// TODO: Handle comments.
 			} else {
 				// Assume character data for now.
 				lexer_consume_chardata(&p->lexer, start);
 			}
-			// TODO: Handle non character data. How are comments not breaking
-			// right now? :O
+			// TODO: Handle other non character data.
 		};
 		token = lexer_consume_token(&p->lexer);
 		assert(token.type == TOKEN_NAME && str8_eq(token.str, elem->name));
@@ -369,7 +385,7 @@ static Element *parser_parse_element(Parser *p, Arena *arena)
 
 static Element *parser_parse(Parser *p, Arena *arena)
 {
-	Token token, open, close;
+	Token token;
 
 	token = lexer_consume_token(&p->lexer);
 	if (token.type != TOKEN_LTQ) {
@@ -436,6 +452,31 @@ static Element *parser_parse(Parser *p, Arena *arena)
 	return root;
 }
 
+static void treewalk(Element *e, s32 lvl)
+{
+	if (!e) return;
+
+	for (s32 i = 0; i < lvl; ++i)
+		printf("    ");
+	printf("<%.*s", (int)e->name.size, e->name.data);
+	for (u32 i = 0; i < e->attrs.len; ++i) {
+		if (e->attrs.arr[i].name.data) {
+			printf(" %.*s=%.*s",
+					(int)e->attrs.arr[i].name.size, e->attrs.arr[i].name.data,
+					(int)e->attrs.arr[i].value.size, e->attrs.arr[i].value.data);
+		}
+	}
+	printf(">\n");
+
+	for (Element *c = e->children.head; c; c = c->next) {
+		treewalk(c, lvl+1);
+	}
+
+	for (s32 i = 0; i < lvl; ++i)
+		printf("    ");
+	printf("</%.*s>\n", (int)e->name.size, e->name.data);
+}
+
 int main(int argc, char **argv)
 {
 	u64 memsize = MiB(4);
@@ -459,7 +500,8 @@ int main(int argc, char **argv)
 	Parser parser;
 	lexer_init(&parser.lexer, buf, n);
 
-	parser_parse(&parser, &arena);
+	Element *root = parser_parse(&parser, &arena);
+	treewalk(root, 0);
 
 	munmap(mem, memsize);
 
