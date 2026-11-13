@@ -1,7 +1,7 @@
-main: main.c base.c
+scanner: scanner.c base.c
 	gcc -o $@ $^ -Wall -Wextra -std=c99 -O0 -g
 
 clean:
-	rm -f main
+	rm -f scanner
 
-.PHONY: main clean
+.PHONY: main scanner
