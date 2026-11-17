@@ -29,7 +29,11 @@ typedef double f64;
 #define MiB(n) ((n) << 20)
 #define GiB(n) ((n) << 30)
 
+#define arraycount(a) (sizeof(a) / sizeof((a)[0]))
+
 #define between(v, a, b) ((a) <= (v) && (v) <= (b))
+#define min(x, y) ((x) < (y) ? (x) : (y))
+#define max(x, y) ((x) > (y) ? (x) : (y))
 
 #define assert(c) \
 	do { \
