@@ -68,7 +68,7 @@ static void flush_outgoing(int sockfd)
 			(u32 *)&send_ring[0];
 		u32 msg_len = *word2 >> 16;
 
-		assert(msg_len%4 == 0);
+		assert(msg_len >= 8 && msg_len%4 == 0);
 		if (len < msg_len) {
 			break;
 		}
@@ -80,12 +80,76 @@ static void flush_outgoing(int sockfd)
 		};
 		struct msghdr req = {.msg_iov = iovs, .msg_iovlen = 2};
 
-		if (sendmsg(sockfd, &req, 0) == -1) {
+		ssize_t bytes_sent = sendmsg(sockfd, &req, 0) ;
+		if (bytes_sent == -1) {
 			perror("sendmsg");
 			exit(1);
 		}
+		assert(bytes_sent == msg_len);
 
 		send_tail += msg_len;
+	}
+}
+
+static void receive_and_dispatch(int sockfd)
+{
+	u32 len = recv_head - recv_tail;
+	u32 left = sizeof(recv_ring) - len;
+	assert(len <= sizeof(recv_ring));
+
+	u32 write_idx = recv_head & (sizeof(recv_ring) - 1);
+
+	u32 first_len = min(left, sizeof(recv_ring) - recv_head);
+	struct iovec iovs[] = {
+		{.iov_base = &recv_ring[write_idx], .iov_len = first_len},
+		{.iov_base = &recv_ring[0],         .iov_len = left - first_len}
+	};
+	struct msghdr recv_msg = {.msg_iov = iovs, .msg_iovlen = 2};
+
+	ssize_t bytes_read = recvmsg(sockfd, &recv_msg, 0);
+	if (bytes_read < 0) {
+		perror("recvmsg peek");
+		exit(1);
+	}
+	recv_head += bytes_read;
+
+	while (1) {
+		if (recv_head - recv_tail < 8) {
+			break;
+		}
+
+		u32 read_idx = recv_tail & (sizeof(recv_ring) - 1);
+		assert(read_idx%4 == 0);
+
+		u32 *word2 = (read_idx + 4 < sizeof(recv_ring)) ?
+			(u32 *)&recv_ring[read_idx+4] :
+			(u32 *)&recv_ring[0];
+		u32 msg_len = *word2 >> 16;
+		assert(msg_len >= 8 && msg_len%4 == 0);
+
+		if (recv_head - recv_tail < msg_len) {
+			break;
+		}
+
+		u8 *buf = &recv_ring[read_idx];
+		if (sizeof(recv_ring) - read_idx < msg_len) {
+			// TODO: remove malloc
+			buf = malloc(msg_len);
+			u32 first_len = sizeof(recv_ring - read_idx);
+			memcpy(buf, recv_ring+read_idx, first_len);
+			memcpy(buf+first_len, recv_ring, msg_len-first_len);
+		}
+
+		for (u32 i = 0; i < msg_len; i += 4) {
+			printf("0x%08X ", *(u32 *)&buf[i]);
+		}
+		printf("\n");
+
+		if (buf != recv_ring+read_idx) {
+			free(buf);
+		}
+
+		recv_tail += msg_len;
 	}
 }
 
@@ -127,52 +191,7 @@ int main(void)
 	sleep(1);
 	printf("done sleeping\n");
 
-	for (int x = 0; x < 1; ++x) {
-		// TODO: Check math (wrap-around).
-
-		u32 used = recv_head - recv_tail;
-		u32 left = sizeof(recv_ring) - used;
-		assert(used <= sizeof(recv_ring));
-
-		u32 read_idx = recv_tail & (sizeof(recv_ring) - 1);
-		u32 write_idx = recv_head & (sizeof(recv_ring) - 1);
-
-		u32 first_len = min(left, sizeof(recv_ring) - recv_head);
-		struct iovec iovs[] = {
-			{.iov_base = &recv_ring[write_idx], .iov_len = first_len},
-			{.iov_base = &recv_ring[0], .iov_len = left - first_len}
-		};
-		struct msghdr recv_msg = {.msg_iov = iovs, .msg_iovlen = 2};
-
-		ssize_t bytes_read = recvmsg(fd, &recv_msg, 0);
-		if (bytes_read < 0) {
-			perror("recvmsg peek");
-			exit(1);
-		}
-		recv_head += bytes_read;
-		if (recv_head - recv_tail < 8) {
-			continue;
-		}
-
-		// TODO: Copy message to tmp buf if it wraps the ring.
-
-		u16 msg_size = ( *(u32 *)(&recv_ring[read_idx+4]) ) >> 16;
-		assert(msg_size%4 == 0 && msg_size >= 8);
-		if (recv_head - recv_tail < msg_size) {
-			continue;
-		}
-
-		do {
-			for (u32 end = recv_tail + msg_size; recv_tail < end; recv_tail += 4) {
-				printf("0x%08X ", *(u32 *)&recv_ring[recv_tail]);
-			}
-			printf("\n");
-			if (recv_head - recv_tail < 8) {
-				break;
-			}
-			msg_size = ( *(u32 *)(&recv_ring[recv_tail+4]) ) >> 16;
-		} while (recv_head - recv_tail >= msg_size);
-	}
+	receive_and_dispatch(fd);
 
 	if (close(fd) == -1) {
 	  perror("close");
