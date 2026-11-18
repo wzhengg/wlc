@@ -22,10 +22,15 @@ static u32 recv_tail = 0;
 static u32 recv_head = 0;
 static u8  recv_ring[RINGSIZE];
 
+typedef struct {
+	u32 id;
+	s32 fd;
+} WL_Display;
+
 // TODO: codegen
-static void wl_display_sync(u32 new_id)
+static void wl_display_sync(WL_Display *wl_display, u32 new_id)
 {
-	u32 msg[] = {1, ((u32)12 << 16) | 0, new_id};
+	u32 msg[] = {wl_display->id, ((u32)12 << 16) | 0, new_id};
 
 	for (u32 i = 0; i < arraycount(msg); ++i) {
 		// TODO: Check if head crosses tail.
@@ -36,9 +41,9 @@ static void wl_display_sync(u32 new_id)
 	}
 }
 
-static void wl_display_get_registry(u32 new_id)
+static void wl_display_get_registry(WL_Display *wl_display, u32 new_id)
 {
-	u32 msg[] = { 1, ((u32)12 << 16) | 1, new_id};
+	u32 msg[] = {wl_display->id, ((u32)12 << 16) | 1, new_id};
 
 	for (u32 i = 0; i < arraycount(msg); ++i) {
 		// TODO: Check if head crosses tail.
@@ -49,7 +54,7 @@ static void wl_display_get_registry(u32 new_id)
 	}
 }
 
-static void flush_outgoing(int sockfd)
+static void flush_outgoing(WL_Display *wl_display)
 {
 	while (1) {
 		u32 len = send_head - send_tail;
@@ -80,7 +85,7 @@ static void flush_outgoing(int sockfd)
 		};
 		struct msghdr req = {.msg_iov = iovs, .msg_iovlen = 2};
 
-		ssize_t bytes_sent = sendmsg(sockfd, &req, 0) ;
+		ssize_t bytes_sent = sendmsg(wl_display->fd, &req, 0) ;
 		if (bytes_sent == -1) {
 			perror("sendmsg");
 			exit(1);
@@ -91,7 +96,7 @@ static void flush_outgoing(int sockfd)
 	}
 }
 
-static void receive_and_dispatch(int sockfd)
+static void receive_and_dispatch(WL_Display *wl_display)
 {
 	u32 len = recv_head - recv_tail;
 	u32 left = sizeof(recv_ring) - len;
@@ -106,7 +111,7 @@ static void receive_and_dispatch(int sockfd)
 	};
 	struct msghdr recv_msg = {.msg_iov = iovs, .msg_iovlen = 2};
 
-	ssize_t bytes_read = recvmsg(sockfd, &recv_msg, 0);
+	ssize_t bytes_read = recvmsg(wl_display->fd, &recv_msg, 0);
 	if (bytes_read < 0) {
 		perror("recvmsg peek");
 		exit(1);
@@ -153,19 +158,19 @@ static void receive_and_dispatch(int sockfd)
 	}
 }
 
-int main(void)
+static WL_Display *wl_display_connect(void)
 {
 	char *xdg_runtime_dir = getenv("XDG_RUNTIME_DIR");
 	char *wayland_display = getenv("WAYLAND_DISPLAY");
 	if (!xdg_runtime_dir || !wayland_display) {
-		exit(1);
+		return NULL;
 	}
 
 	struct sockaddr_un addr = {0};
 	addr.sun_family = AF_UNIX;
 
 	if (strlen(xdg_runtime_dir) + 1 + strlen(wayland_display) + 1 > sizeof(addr.sun_path)) {
-		exit(1);
+		return NULL;
 	}
 
 	memcpy(addr.sun_path, xdg_runtime_dir, strlen(xdg_runtime_dir));
@@ -175,28 +180,46 @@ int main(void)
 	int fd = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (fd == -1) {
 		perror("socket");
-		exit(1);
+		return NULL;
 	}
 
 	if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
 		perror("connect");
+		assert(close(fd) == 0);
+		return NULL;
+	}
+
+	// TODO: remove malloc
+	WL_Display *wl_display = malloc(sizeof(WL_Display));
+	assert(wl_display);
+	wl_display->id = 1;
+	wl_display->fd = fd;
+	return wl_display;
+}
+
+int main(void)
+{
+	WL_Display *wl_display = wl_display_connect();
+	if (!wl_display) {
 		exit(1);
 	}
 
-	wl_display_get_registry(id++);
-	wl_display_sync(id++);
-	flush_outgoing(fd);
+	wl_display_get_registry(wl_display, id++);
+	wl_display_sync(wl_display, id++);
+	flush_outgoing(wl_display);
 
 	// TODO: No more sleeping
 	sleep(1);
 	printf("done sleeping\n");
 
-	receive_and_dispatch(fd);
+	receive_and_dispatch(wl_display);
 
-	if (close(fd) == -1) {
+	// TODO: Do I also need to disconnect from the socket?
+	if (close(wl_display->fd) == -1) {
 	  perror("close");
 	  exit(1);
 	}
+	free(wl_display);
 
 	return 0;
 }
